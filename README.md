@@ -107,7 +107,7 @@ Catalyst exposes metrics about his usage:
 | catalyst_http_status_code                   | status                  | counter | Number request in status code.                                            |
 | catalyst_http_response_time                 |                         | counter | Requests response time count in nanoseconds.                              |
 
-## Licence
+## Licence
 
 Catalyst is released under a [3-BSD clause license](./LICENSE).
 
