@@ -1,6 +1,7 @@
 package core
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -29,6 +30,7 @@ type Warp struct {
 	token string
 	pr    *io.PipeReader
 	pw    *io.PipeWriter
+	retry *bytes.Buffer
 	err   error
 	mutex sync.Mutex
 	close sync.Mutex
@@ -111,6 +113,20 @@ func (e WarpGoneError) Error() string {
 	return fmt.Sprintf("Invalid application: %v", e.Str)
 }
 
+func preparePostRequest(warpEndpoint, token, txn, now string, body io.Reader) (*http.Request, error) {
+	req, err := http.NewRequest("POST", warpEndpoint+"/api/v0/update", body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("X-Warp10-Token", token)
+	req.Header.Set("Content-Type", "text/plain")
+	if now != "" {
+		req.Header.Set("X-Warp10-Now", now)
+	}
+	req.Header.Set("Txn", txn)
+	return req, err
+}
+
 // NewWarp returns a Warp connection.
 func NewWarp(token, txn, now string) (*Warp, error) {
 	httpClientSingleton.Do(func() {
@@ -119,7 +135,8 @@ func NewWarp(token, txn, now string) (*Warp, error) {
 			Transport: &http.Transport{
 				DisableKeepAlives: false,
 				Dial: (&net.Dialer{
-					Timeout: viper.GetDuration("warp.connection.dial.timeout"),
+					Timeout:   viper.GetDuration("warp.connection.dial.timeout"),
+					KeepAlive: viper.GetDuration("warp.connection.keep-alive.timeout"),
 				}).Dial,
 				TLSHandshakeTimeout: viper.GetDuration("warp.connection.tls.timeout"),
 				MaxIdleConnsPerHost: viper.GetInt("warp.connection.idle.max"),
@@ -160,31 +177,43 @@ func NewWarp(token, txn, now string) (*Warp, error) {
 		token: token,
 		pr:    pr,
 		pw:    pw,
+		retry: new(bytes.Buffer),
 	}
-
-	req, err := http.NewRequest("POST", warpEndpoint+"/api/v0/update", pr)
-	if err != nil {
-		return nil, err
-	}
-
-	req.Header.Set("Content-Type", "text/plain")
-	req.Header.Set("X-Warp10-Token", token)
-	req.Header.Set("X-CityzenData-Token", token)
-	if now != "" {
-		req.Header.Set("X-Warp10-Now", now)
-	}
-	req.Header.Set("Txn", txn)
 
 	go func() {
 		w.close.Lock()
 		defer w.close.Unlock()
 
-		res, err := httpClient.Do(req)
+		req, err := preparePostRequest(warpEndpoint, token, txn, now, pr)
 		if err != nil {
 			w.mutex.Lock()
 			defer w.mutex.Unlock()
 			w.err = err
 			return
+		}
+
+		res, err := httpClient.Do(req)
+
+		if err != nil {
+			log.WithError(err).WithFields(log.Fields{
+				"txn": txn,
+			}).Warn("Internal post error, retry the connection once")
+
+			// Add a retry on valid connection due to Go failing to create the connection
+			cloneReq, err := preparePostRequest(warpEndpoint, token, txn, now, bytes.NewReader(w.retry.Bytes()))
+			if err != nil {
+				w.mutex.Lock()
+				defer w.mutex.Unlock()
+				w.err = err
+				return
+			}
+			res, err = httpClient.Do(cloneReq)
+			if err != nil {
+				w.mutex.Lock()
+				defer w.mutex.Unlock()
+				w.err = err
+				return
+			}
 		}
 		defer func() {
 			if err := res.Body.Close(); err != nil {
@@ -226,9 +255,9 @@ func (w *Warp) Send(gts []byte) error {
 	}
 
 	w.mutex.Unlock()
-	log.Debugf("Series to send: %s", string(gts))
 	_, _ = w.pw.Write(gts)
 	w.mutex.Lock()
+	w.retry.Write(gts)
 
 	return w.HandleError(w.err)
 }
@@ -325,6 +354,13 @@ func (w *Warp) HandleError(e error) error {
 			Limit: limit,
 			Body:  body,
 			App:   app,
+		}
+	}
+
+	if strings.Contains(e.Error(), "EOF") {
+		return WarpInputError{
+			Str:  "error",
+			Body: body,
 		}
 	}
 
