@@ -191,6 +191,10 @@ func (h *Handler) Handle(c echo.Context) error {
 		}
 
 		if err = warp.Close(); err != nil {
+			if h.errorHandler != nil {
+				err = h.errorHandler(err)
+			}
+			code, msg = h.handleErr(req, err, c.Get("txn").(string))
 			log.WithError(err).WithFields(log.Fields{
 				"txn":  c.Get("txn").(string),
 				"code": code,
