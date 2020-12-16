@@ -5,6 +5,9 @@ Warp 10 multi-protocole ingress proxy.
 Catalyst is an input proxy for [*Warp 10*](https://www.warp10.io).
 Its role is to receive metrics in the native protocoles of many Time Series databases (*InfluxDB*, *OpenTSDB*, *Prometheus*...), translate them to (*Warp 10*'s *GTS input format*)[http://www.warp10.io/apis/gts-input-format/] and send them to a *Warp 10* instance.
 
+
+![Catalyst: Warp 10 multi-protocole ingress proxy.](./assets/logo.png)
+
 ## Pre-install
 
 To build and install Catalyst you need:
